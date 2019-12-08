@@ -1,0 +1,5 @@
+#!/bin/bash
+if [ "$1" == "clean" ]; then
+	cargo clean
+fi
+cargo build --release --no-default-features --features alsa_backend,dbus_mpris
