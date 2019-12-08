@@ -36,7 +36,8 @@ whoami = "0.6.0"
 [dependencies.librespot]
 default-features = false
 features = ["with-tremor"]
-git = "https://github.com/librespot-org/librespot.git"
+# git = "https://github.com/librespot-org/librespot.git"
+path = "../librespot"
 
 [dev-dependencies]
 env_logger = "0.7"
