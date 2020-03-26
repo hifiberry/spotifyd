@@ -1,7 +1,7 @@
 use gethostname::gethostname;
 use lazy_static::lazy_static;
 use librespot::{
-    core::{cache::Cache, config::SessionConfig, version},
+    core::{cache::Cache, config::DeviceType as LSDeviceType, config::SessionConfig, version},
     playback::config::{Bitrate as LSBitrate, PlayerConfig},
 };
 use log::{error, info};
@@ -113,6 +113,82 @@ impl FromStr for VolumeController {
 }
 
 lazy_static! {
+    static ref DEVICETYPE_VALUES: Vec<&'static str> = vec![
+        "computer",
+        "tablet",
+        "smartphone",
+        "speaker",
+        "tv",
+        "avr",
+        "stb",
+        "audiodongle"
+    ];
+}
+
+// Spotify's device type (copied from it's config.rs)
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, StructOpt)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceType {
+    Unknown = 0,
+    Computer = 1,
+    Tablet = 2,
+    Smartphone = 3,
+    Speaker = 4,
+    TV = 5,
+    AVR = 6,
+    STB = 7,
+    AudioDongle = 8,
+}
+
+impl From<LSDeviceType> for DeviceType {
+    fn from(item: LSDeviceType) -> Self {
+        match item {
+            LSDeviceType::Unknown => DeviceType::Unknown,
+            LSDeviceType::Computer => DeviceType::Computer,
+            LSDeviceType::Tablet => DeviceType::Tablet,
+            LSDeviceType::Smartphone => DeviceType::Smartphone,
+            LSDeviceType::Speaker => DeviceType::Speaker,
+            LSDeviceType::TV => DeviceType::TV,
+            LSDeviceType::AVR => DeviceType::AVR,
+            LSDeviceType::STB => DeviceType::STB,
+            LSDeviceType::AudioDongle => DeviceType::AudioDongle,
+        }
+    }
+}
+
+impl From<&DeviceType> for LSDeviceType {
+    fn from(item: &DeviceType) -> Self {
+        match item {
+            DeviceType::Unknown => LSDeviceType::Unknown,
+            DeviceType::Computer => LSDeviceType::Computer,
+            DeviceType::Tablet => LSDeviceType::Tablet,
+            DeviceType::Smartphone => LSDeviceType::Smartphone,
+            DeviceType::Speaker => LSDeviceType::Speaker,
+            DeviceType::TV => LSDeviceType::TV,
+            DeviceType::AVR => LSDeviceType::AVR,
+            DeviceType::STB => LSDeviceType::STB,
+            DeviceType::AudioDongle => LSDeviceType::AudioDongle,
+        }
+    }
+}
+
+impl FromStr for DeviceType {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let dt = LSDeviceType::from_str(s).unwrap();
+        Ok(dt.into())
+    }
+}
+
+impl ToString for DeviceType {
+    fn to_string(&self) -> String {
+        let dt: LSDeviceType = self.into();
+        format!("{}", dt)
+    }
+}
+
+lazy_static! {
     static ref BITRATE_VALUES: Vec<&'static str> = vec!["96", "160", "320"];
 }
 
@@ -202,8 +278,8 @@ pub struct CliConfig {
     pub shared_config: SharedConfigValues,
 }
 
-/// A struct that holds all allowed config fields.
-/// The actual config file is made up of two sections, spotifyd and global.
+// A struct that holds all allowed config fields.
+// The actual config file is made up of two sections, spotifyd and global.
 #[derive(Clone, Default, Deserialize, PartialEq, StructOpt)]
 pub struct SharedConfigValues {
     /// The Spotify account user name
@@ -290,8 +366,17 @@ pub struct SharedConfigValues {
     zeroconf_port: Option<u16>,
 
     /// The proxy used to connect to spotify's servers
-    #[structopt(long, short, value_name = "string")]
+    #[structopt(long, value_name = "string")]
     proxy: Option<String>,
+
+    /// The device type shown to clients
+    #[structopt(long, possible_values = &DEVICETYPE_VALUES, value_name = "string")]
+    device_type: Option<DeviceType>,
+
+    /// Autoplay on connect
+    #[structopt(long)]
+    #[serde(default, deserialize_with = "de_from_str")]
+    autoplay: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -369,6 +454,7 @@ impl fmt::Debug for SharedConfigValues {
             .field("normalisation_pregain", &self.normalisation_pregain)
             .field("zeroconf_port", &self.zeroconf_port)
             .field("proxy", &self.proxy)
+            .field("device_type", &self.device_type)
             .finish()
     }
 }
@@ -444,7 +530,9 @@ impl SharedConfigValues {
             volume_controller,
             cache_path,
             on_song_change_hook,
-            proxy
+            zeroconf_port,
+            proxy,
+            device_type
         );
 
         // Handles boolean merging.
@@ -493,6 +581,8 @@ pub(crate) struct SpotifydConfig {
     pub(crate) pid: Option<String>,
     pub(crate) shell: String,
     pub(crate) zeroconf_port: Option<u16>,
+    pub(crate) device_type: String,
+    pub(crate) autoplay: bool,
 }
 
 pub(crate) fn get_internal_config(config: CliConfig) -> SpotifydConfig {
@@ -531,6 +621,14 @@ pub(crate) fn get_internal_config(config: CliConfig) -> SpotifydConfig {
     let device_id = device_id(&device_name);
 
     let normalisation_pregain = config.shared_config.normalisation_pregain.unwrap_or(0.0f32);
+
+    let autoplay = config.shared_config.autoplay;
+
+    let device_type = config
+        .shared_config
+        .device_type
+        .unwrap_or(DeviceType::Speaker)
+        .to_string();
 
     let pid = config
         .pid
@@ -598,6 +696,8 @@ pub(crate) fn get_internal_config(config: CliConfig) -> SpotifydConfig {
         pid,
         shell,
         zeroconf_port: config.shared_config.zeroconf_port,
+        device_type,
+        autoplay,
     }
 }
 
@@ -617,7 +717,7 @@ mod tests {
         assert!(spotifyd_section != global_section, true);
 
         let file_config = FileConfig {
-            global: Some(global_section.clone()),
+            global: Some(global_section),
             spotifyd: Some(spotifyd_section.clone()),
         };
         let merged_config = file_config.get_merged_sections().unwrap();

@@ -25,7 +25,7 @@ use rspotify::spotify::{
 };
 use tokio_core::reactor::Handle;
 
-use std::{collections::HashMap, rc::Rc, thread};
+use std::{collections::HashMap, env, rc::Rc, thread};
 
 pub struct DbusServer {
     session: Session,
@@ -38,7 +38,7 @@ pub struct DbusServer {
 }
 
 const CLIENT_ID: &str = "2c1ea588dfbc4a989e2426f8385297c3";
-const SCOPE: &str = "user-read-playback-state,user-read-private,user-read-birthdate,\
+const SCOPE: &str = "user-read-playback-state,user-read-private,\
                      user-read-email,playlist-read-private,user-library-read,user-library-modify,\
                      user-top-read,playlist-read-collaborative,playlist-modify-public,\
                      playlist-modify-private,user-follow-read,user-follow-modify,\
@@ -94,7 +94,10 @@ impl Future for DbusServer {
                     got_new_token = true;
                 }
             } else {
-                self.token_request = Some(get_token(&self.session, CLIENT_ID, SCOPE));
+                // This is more meant as a fast hotfix than anything else!
+                let client_id =
+                    env::var("SPOTIFYD_CLIENT_ID").unwrap_or_else(|_| CLIENT_ID.to_string());
+                self.token_request = Some(get_token(&self.session, &client_id, SCOPE));
             }
         } else if let Some(ref mut fut) = self.dbus_future {
             return fut.poll();
@@ -297,7 +300,7 @@ fn create_dbus_server(
     };
 
     let method_stop = {
-        let local_spirc = spirc.clone();
+        let local_spirc = spirc;
         f.amethod("Stop", (), move |m| {
             // TODO: add real stop implementation.
             local_spirc.pause();
@@ -332,7 +335,22 @@ fn create_dbus_server(
         (),
         spotify_api_method!([sp, device, uri: String]
             if let Ok(uri) = uri {
-                let _ = sp.start_playback(device, None, Some(vec![uri]), for_position(0), None);
+                let device_name = device.unwrap_or_else(|| "".to_owned());
+                let device_id = match sp.device() {
+                    Ok(device_payload) => {
+                        match device_payload.devices.into_iter().find(|d| d.is_active && d.name == device_name) {
+                            Some(device) => Some(device.id),
+                            None => None,
+                        }
+                    },
+                    Err(_) => None,
+                };
+
+                if uri.contains("spotify:track") {
+                    let _ = sp.start_playback(device_id, None, Some(vec![uri]), for_position(0), None);
+                } else {
+                    let _ = sp.start_playback(device_id, Some(uri), None, for_position(0), None);
+                }
             }
         ),
     );
@@ -594,7 +612,7 @@ fn create_dbus_server(
         .expect("Failed to create async dbus connection");
 
     let server = ATreeServer::new(
-        connection.clone(),
+        connection,
         Box::new(tree),
         async_connection
             .messages()
